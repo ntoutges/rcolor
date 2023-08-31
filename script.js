@@ -16,13 +16,16 @@ var peer;
 var conns = {};
 var sendToSlavesQueue = {};
 
+var mode = 0;
+var modeStrs = ["rgb(&9r,&9g,&9b)", "&9r &9g &9b", "#&xr&xb&xg"];
+
 function randomizeColor() {
     const r = genColorComponent();
     const g = genColorComponent();
     const b = genColorComponent();
 
     setColor(r,g,b);
-    updateSetColor(r,g,b);
+    updateSetColor();
     sendToSlaves("color", [r,g,b]);
 }
 
@@ -36,15 +39,39 @@ function setColor(r,g,b) {
     currentColor = [r,g,b];
 }
 
-function updateSetColor(r,g,b) {
-    const colorString = `rgb(${r},${g},${b})`;
+function updateSetColor() {
+    const [r,g,b] = currentColor;
+    
+    const colorString = genColorStr(r,g,b);
     $("#set-color").innerText = colorString;
     document.title = colorString;
 }
 
+function genColorStr(r,g,b) {
+    const [xr,xg,xb] = [lpad(r.toString(16)), lpad(g.toString(16)), lpad(b.toString(16))];
+    const colorString = modeStrs[mode]
+    .replace("&9r", r)
+    .replace("&xr", xr)
+    .replace("&9g", g)
+    .replace("&xg", xg)
+    .replace("&9b", b)
+    .replace("&xb", xb);
+
+    return colorString;
+}
+
+function lpad(str) {
+    while (str.length < 2) {
+        str = "0" + str;
+    }
+    return str;
+}
+
 function updateCurrentColor() {
-    const colorString = window.getComputedStyle($("body"), null).getPropertyValue("background-color");
-    $("#current-color").innerText = colorString;
+    const rawColor = window.getComputedStyle($("body"), null).getPropertyValue("background-color");
+    const [r,g,b] = rawColor.match(/\d+/g);
+
+    $("#current-color").innerText = genColorStr(parseInt(r,10),parseInt(g,10),parseInt(b,10));
 }
 
 function setColorPeriod(periodMS) {
@@ -101,9 +128,27 @@ $("body").addEventListener("keydown", (e) => {
 
 $("body").addEventListener("click", toggleHide);
 
+function changeMode(step) {
+    mode += step;
+    if (mode < 0) mode = modeStrs.length-1;
+    if (mode >= modeStrs.length) mode = 0;
+
+    updateSetColor();
+    sendToSlaves("mode", mode);
+}
+
+$("#next-type").addEventListener("click", function(e) {
+    e.stopPropagation();
+    changeMode(1);
+});
+$("#last-type").addEventListener("click", function(e) {
+    e.stopPropagation();
+    changeMode(-1);
+});
+
 function generatePeer() {
     const peerId = window.location.search.substring(1);
-    if (peerId) generateSlave(peerId); // connect to this id
+    if (peerId) generateSlave(peerId.toUpperCase()); // connect to this id
     else generateMaster();             // create new id to connect to
 }
 
@@ -143,6 +188,11 @@ function generateMaster() {
                 queueSendToSlaves("from", conn.connectionId);
                 setColorPeriod(data.interval);
                 updateHB = true;
+            }
+            if ("mode" in data) {
+                queueSendToSlaves("from", conn.connectionId);
+                mode = data.mode;
+                changeMode(0);
             }
 
             if (updateHB) refreshHeartbeat(conn.connectionId);
@@ -191,6 +241,10 @@ function generateSlave(peerId) {
                     setColorPeriod(data.interval);
                 }
                 if ("visibility" in data && data.visibility != isVisible) { toggleHide(); }
+                if ("mode" in data) {
+                    mode = data.mode;
+                    changeMode(0);
+                }
             });
 
             // heartbeat
@@ -218,7 +272,7 @@ function trimHeartbeatless() {
     }
 }
 
-const validChars = "ACDEFGHIJKMNPQRTUVWXYZ3467";
+const validChars = "ACDEFGHJKMNPQRTUVWXYZ3467";
 function createIDString(length=4) {
     let str = "";
     for (let i = 0; i < length; i++) {

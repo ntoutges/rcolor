@@ -176,6 +176,7 @@ function generateMaster() {
             if ("init" in data) {
                 queueSendToSlaves("interval", colorPeriod);
                 queueSendToSlaves("visibility", isVisible);
+                queueSendToSlaves("mode", mode);
                 sendToSlaves("color", currentColor, conn.connectionId);
                 updateHB = true;
             }

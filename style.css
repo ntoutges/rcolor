@@ -142,7 +142,7 @@ body:hover #last-type {
 
 body.only-colors #next-type,
 body.only-colors #last-type {
-    opacity: 0;
+    opacity: 0 !important;
 }
 
 #next-type:hover {

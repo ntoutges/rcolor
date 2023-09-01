@@ -17,6 +17,8 @@ var peer;
 var conns = {};
 var sendToSlavesQueue = {};
 
+var isHeartbeatNeeded = true;
+
 var mode = 0;
 var modeStrs = ["rgb(&9r,&9g,&9b)", "&9r &9g &9b", "#&xr&xb&xg"];
 
@@ -30,10 +32,10 @@ function randomizeColor() {
     sendToSlaves("color", [r,g,b]);
 }
 
-function unRandomizeColor(r,g,b) {
+function unRandomizeColor(r,g,b, doSend=true) {
     setColor(r,g,b);
     updateSetColor();
-    sendToSlaves("color", [r,g,b]);
+    if (doSend) sendToSlaves("color", [r,g,b]);
 }
 
 function genColorComponent() {
@@ -49,7 +51,6 @@ function setColor(r,g,b) {
         $("#custom-color > #r").value = r;
         $("#custom-color > #g").value = g;
         $("#custom-color > #b").value = b;
-
     }
 }
 
@@ -91,7 +92,7 @@ function getCurrentColor() {
     return rawColor.match(/\d+/g);
 }
 
-function setColorPeriod(periodMS) {
+function setColorPeriod(periodMS, doSend=true) {
     periodMS = Math.min(Math.max(periodMS, 100), 5000); // set constraints on period
 
     $("body").style.transitionDuration = `${periodMS}ms`;
@@ -107,7 +108,7 @@ function setColorPeriod(periodMS) {
     const thisTick = (new Date()).getTime();
     colorWaitInterval = setTimeout(() => { // wait until this interval would have ended
         
-        sendToSlaves("interval", colorPeriod);
+        if (doSend) sendToSlaves("interval", colorPeriod);
         if (!isSlave) {
             randomizeColor(); // initial, fast call
             colorInterval = setInterval(randomizeColor, periodMS); // repeating, slow call
@@ -130,14 +131,16 @@ function toggleHide() {
     sendToSlaves("visibility", isVisible);
 }
 
-function togglePause() {
+function togglePause(doSend=true) {
     isPaused = !isPaused;
+    if (doSend) sendToSlaves("paused", isPaused);
     if (isPaused) {
         if (colorInterval) clearInterval(colorInterval);
         colorInterval = undefined;
 
         const [r,g,b] = getCurrentColor();
-        unRandomizeColor(r,g,b);
+        unRandomizeColor(r,g,b, doSend);
+        if (doSend) sendToSlaves("color", [r,g,b]);
         $("#custom-color > #r").value = r;
         $("#custom-color > #g").value = g;
         $("#custom-color > #b").value = b;
@@ -149,16 +152,15 @@ function togglePause() {
         $("#color-holder").classList.add("customs");        
     }
     else {
-        if (!isSlave) setColorPeriod(colorPeriod);
+        if (!isSlave) setColorPeriod(colorPeriod, doSend);
         $("#color-holder").classList.remove("customs");
     }
-    sendToSlaves("paused", isPaused);
 }
 
 function handleInput(index, val) {
     let num = Math.min(Math.max(parseInt(val,10),0),255);
     currentColor[index] = num;
-    unRandomizeColor(currentColor[0], currentColor[1], currentColor[2]);
+    unRandomizeColor(currentColor[0], currentColor[1], currentColor[2], true);
 }
 
 $("#custom-color > #r").addEventListener("click", (e) => { e.stopPropagation(); });
@@ -180,29 +182,29 @@ $("body").addEventListener("keydown", (e) => {
             setColorPeriod(colorPeriod - step);
             break;
         case " ": // pause/play
-            togglePause();
+            togglePause(true);
             break;
     }
 });
 
 $("body").addEventListener("click", toggleHide);
 
-function changeMode(step) {
+function changeMode(step, doSend=true) {
     mode += step;
     if (mode < 0) mode = modeStrs.length-1;
     if (mode >= modeStrs.length) mode = 0;
 
     updateSetColor();
-    sendToSlaves("mode", mode);
+    if (doSend) sendToSlaves("mode", mode);
 }
 
 $("#next-type").addEventListener("click", function(e) {
     e.stopPropagation();
-    changeMode(1);
+    changeMode(1,true);
 });
 $("#last-type").addEventListener("click", function(e) {
     e.stopPropagation();
-    changeMode(-1);
+    changeMode(-1,true);
 });
 
 function generatePeer() {
@@ -230,43 +232,37 @@ function generateMaster() {
         };
         
         conn.on("data", data => {
-            let updateHB = false;
-            if ("hb" in data) updateHB = true;
             if ("init" in data) {
                 queueSendToSlaves("interval", colorPeriod);
                 queueSendToSlaves("visibility", isVisible);
                 queueSendToSlaves("isPaused", isPaused);
                 queueSendToSlaves("mode", mode);
                 sendToSlaves("color", currentColor, conn.connectionId);
-                updateHB = true;
             }
             if ("color" in data) {
                 queueSendToSlaves("from", conn.connectionId);
                 const [r,g,b] = data.color;
-                setColor(r,g,b);
-                updateSetColor(r,g,b);
+                unRandomizeColor(r,g,b, true);
             }
             if ("visibility" in data && data.visibility != isVisible) {
                 queueSendToSlaves("from", conn.connectionId);
                 toggleHide();
-                updateHB = true;
             }
             if ("interval" in data && data.interval != colorPeriod) {
                 queueSendToSlaves("from", conn.connectionId);
                 setColorPeriod(data.interval);
-                updateHB = true;
             }
             if ("mode" in data) {
                 queueSendToSlaves("from", conn.connectionId);
                 mode = data.mode;
-                changeMode(0);
+                changeMode(0, true);
             }
             if ("paused" in data && data.paused != isPaused) {
                 queueSendToSlaves("from", conn.connectionId);
-                togglePause();
+                togglePause(true);
             }
 
-            if (updateHB) refreshHeartbeat(conn.connectionId);
+            refreshHeartbeat(conn.connectionId);
         });
     });
 
@@ -280,7 +276,9 @@ function queueSendToSlaves(key,value) {
 
 function sendToSlaves(key, value, oneSlaveId=null) {
     sendToSlavesQueue[key] = value;
-
+    isHeartbeatNeeded = false;
+    
+    console.log(sendToSlavesQueue);
     if (oneSlaveId) conns[oneSlaveId].conn.send(sendToSlavesQueue); 
     else for (let i in conns) { conns[i].conn.send(sendToSlavesQueue); }
     
@@ -309,21 +307,22 @@ function generateSlave(peerId) {
                     updateSetColor(r,g,b);
                 }
                 if ("interval" in data) {
-                    setColorPeriod(data.interval);
+                    setColorPeriod(data.interval, false);
                 }
                 if ("visibility" in data && data.visibility != isVisible) { toggleHide(); }
                 if ("mode" in data) {
                     mode = data.mode;
-                    changeMode(0);
+                    changeMode(0, false);
                 }
                 if ("paused" in data && data.paused != isPaused) {
-                    togglePause();
+                    togglePause(false);
                 }
             });
 
             // heartbeat
             setInterval(() => {
-                conn.send({ "hb": true });
+                if (isHeartbeatNeeded) conn.send({ "hb": true });
+                isHeartbeatNeeded = true;
             }, HEARTBEAT_PERIOD);
 
             conn.send({ "init": true }); // send that connection has been made // might not be necessary
@@ -338,9 +337,9 @@ function refreshHeartbeat(connId) {
 function trimHeartbeatless() {
     const now = (new Date()).getTime();
     for (let i in conns) {
-        if (now > conns[i].hb + 10*HEARTBEAT_PERIOD) { // missed 10 consecutive heartbeats
+        if (now > conns[i].hb + 10*HEARTBEAT_PERIOD) { // missed 5 consecutive heartbeats
             conns[i].conn.send({ "disconnected": true });
-            // console.log("death")
+            console.log("death")
             delete conns[i];
         }            
     }

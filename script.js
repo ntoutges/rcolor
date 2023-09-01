@@ -235,8 +235,8 @@ function generateMaster() {
             if ("init" in data) {
                 queueSendToSlaves("interval", colorPeriod);
                 queueSendToSlaves("visibility", isVisible);
-                queueSendToSlaves("mode", mode);
                 queueSendToSlaves("isPaused", isPaused);
+                queueSendToSlaves("mode", mode);
                 sendToSlaves("color", currentColor, conn.connectionId);
                 updateHB = true;
             }

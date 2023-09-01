@@ -10,6 +10,7 @@ var nextTick = 0;
 
 var isVisible = true;
 var currentColor = [0,0,0];
+var isPaused = false;
 
 var isSlave = false;
 var peer;
@@ -29,6 +30,12 @@ function randomizeColor() {
     sendToSlaves("color", [r,g,b]);
 }
 
+function unRandomizeColor(r,g,b) {
+    setColor(r,g,b);
+    updateSetColor();
+    sendToSlaves("color", [r,g,b]);
+}
+
 function genColorComponent() {
     return Math.floor(Math.random() * 256);
 }
@@ -37,6 +44,13 @@ function setColor(r,g,b) {
     nextTick = (new Date()).getTime() + colorPeriod;
     $("body").style.backgroundColor = `rgb(${r},${g},${b})`;
     currentColor = [r,g,b];
+
+    if (isPaused) {
+        $("#custom-color > #r").value = r;
+        $("#custom-color > #g").value = g;
+        $("#custom-color > #b").value = b;
+
+    }
 }
 
 function updateSetColor() {
@@ -68,10 +82,13 @@ function lpad(str) {
 }
 
 function updateCurrentColor() {
-    const rawColor = window.getComputedStyle($("body"), null).getPropertyValue("background-color");
-    const [r,g,b] = rawColor.match(/\d+/g);
-
+    const [r,g,b] = getCurrentColor();
     $("#current-color").innerText = genColorStr(parseInt(r,10),parseInt(g,10),parseInt(b,10));
+}
+
+function getCurrentColor() {
+    const rawColor = window.getComputedStyle($("body"), null).getPropertyValue("background-color");
+    return rawColor.match(/\d+/g);
 }
 
 function setColorPeriod(periodMS) {
@@ -113,6 +130,45 @@ function toggleHide() {
     sendToSlaves("visibility", isVisible);
 }
 
+function togglePause() {
+    isPaused = !isPaused;
+    if (isPaused) {
+        if (colorInterval) clearInterval(colorInterval);
+        colorInterval = undefined;
+
+        const [r,g,b] = getCurrentColor();
+        unRandomizeColor(r,g,b);
+        $("#custom-color > #r").value = r;
+        $("#custom-color > #g").value = g;
+        $("#custom-color > #b").value = b;
+
+        nextTick = 0;
+
+        if (!isVisible) toggleHide();
+
+        $("#color-holder").classList.add("customs");        
+    }
+    else {
+        if (!isSlave) setColorPeriod(colorPeriod);
+        $("#color-holder").classList.remove("customs");
+    }
+    sendToSlaves("paused", isPaused);
+}
+
+function handleInput(index, val) {
+    let num = Math.min(Math.max(parseInt(val,10),0),255);
+    currentColor[index] = num;
+    unRandomizeColor(currentColor[0], currentColor[1], currentColor[2]);
+}
+
+$("#custom-color > #r").addEventListener("click", (e) => { e.stopPropagation(); });
+$("#custom-color > #g").addEventListener("click", (e) => { e.stopPropagation(); });
+$("#custom-color > #b").addEventListener("click", (e) => { e.stopPropagation(); });
+
+$("#custom-color > #r").addEventListener("input", function () { handleInput(0, this.value); });
+$("#custom-color > #g").addEventListener("input", function () { handleInput(1, this.value); });
+$("#custom-color > #b").addEventListener("input", function () { handleInput(2, this.value); });
+
 $("body").addEventListener("keydown", (e) => {
     const step = e.ctrlKey ? 100 : 10;
 
@@ -122,6 +178,9 @@ $("body").addEventListener("keydown", (e) => {
             break;
         case "ArrowDown": // decrease period
             setColorPeriod(colorPeriod - step);
+            break;
+        case " ": // pause/play
+            togglePause();
             break;
     }
 });
@@ -176,8 +235,16 @@ function generateMaster() {
             if ("init" in data) {
                 queueSendToSlaves("interval", colorPeriod);
                 queueSendToSlaves("visibility", isVisible);
+                queueSendToSlaves("mode", mode);
+                queueSendToSlaves("isPaused", isPaused);
                 sendToSlaves("color", currentColor, conn.connectionId);
                 updateHB = true;
+            }
+            if ("color" in data) {
+                queueSendToSlaves("from", conn.connectionId);
+                const [r,g,b] = data.color;
+                setColor(r,g,b);
+                updateSetColor(r,g,b);
             }
             if ("visibility" in data && data.visibility != isVisible) {
                 queueSendToSlaves("from", conn.connectionId);
@@ -193,6 +260,10 @@ function generateMaster() {
                 queueSendToSlaves("from", conn.connectionId);
                 mode = data.mode;
                 changeMode(0);
+            }
+            if ("paused" in data && data.paused != isPaused) {
+                queueSendToSlaves("from", conn.connectionId);
+                togglePause();
             }
 
             if (updateHB) refreshHeartbeat(conn.connectionId);
@@ -244,6 +315,9 @@ function generateSlave(peerId) {
                 if ("mode" in data) {
                     mode = data.mode;
                     changeMode(0);
+                }
+                if ("paused" in data && data.paused != isPaused) {
+                    togglePause();
                 }
             });
 

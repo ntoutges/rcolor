@@ -40,14 +40,40 @@ body.only-colors > #id {
     transform: translateY(100%);
 }
 
-#set-color {
+#set-color,
+#custom-color {
     font-size: 15vh;
     text-align: center;
+}
+
+#custom-color > input {
+    font-size: inherit;
+    width: 25vh;
+    text-align: center;
+    background-color: #ffffff63;
+    
+    padding: 0px;
+    border: 0px;
+    margin: 0px;
+}
+
+#custom-color > input::-webkit-outer-spin-button,
+#custom-color > input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
 }
 
 #current-color {
     font-size: 5vh;
     text-align: center;
+}
+
+#color-holder.customs > #set-color {
+    display: none;
+}
+
+#color-holder:not(.customs) > #custom-color {
+    display: none;
 }
 
 #interval {

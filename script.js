@@ -114,7 +114,7 @@ function setColorPeriod(periodMS, doSend=true) {
             colorInterval = setInterval(randomizeColor, periodMS); // repeating, slow call
         }
         colorWaitInterval = undefined;
-    }, nextTick - thisTick);
+    }, Math.max(nextTick - thisTick,0)); // Math.max should prevent this ever going negative
     
     if (flashTimeout) clearTimeout(flashTimeout);
 

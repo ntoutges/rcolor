@@ -1,3 +1,6 @@
+import { Server } from "./virtual-server-src/server.js";
+import { Client } from "./virtual-server-src/client.js";
+
 const $ = document.querySelector.bind(document);
 
 const HEARTBEAT_PERIOD = 1000; // might be increased in the future
@@ -14,10 +17,8 @@ var isPaused = false;
 
 var isSlave = false;
 var peer;
-var conns = {};
-var sendToSlavesQueue = {};
 
-var isHeartbeatNeeded = true;
+var peerIsReady = false;
 
 var mode = 0;
 var modeStrs = ["rgb(&9r,&9g,&9b)", "&9r &9g &9b", "#&xr&xb&xg"];
@@ -29,13 +30,13 @@ function randomizeColor() {
 
     setColor(r,g,b);
     updateSetColor();
-    sendToSlaves("color", [r,g,b]);
+    peer.getVariable("color").set([r,g,b]);
 }
 
 function unRandomizeColor(r,g,b, doSend=true) {
     setColor(r,g,b);
     updateSetColor();
-    if (doSend) sendToSlaves("color", [r,g,b]);
+    if (doSend) peer.getVariable("color").set([r,g,b]);
 }
 
 function genColorComponent() {
@@ -108,13 +109,17 @@ function setColorPeriod(periodMS, doSend=true) {
     const thisTick = (new Date()).getTime();
     colorWaitInterval = setTimeout(() => { // wait until this interval would have ended
         
-        if (doSend) sendToSlaves("interval", colorPeriod);
+        if (doSend) peer.getVariable("interval").set(colorPeriod);
         if (!isSlave) {
             randomizeColor(); // initial, fast call
+            if (colorInterval) {
+                clearInterval(colorInterval);
+                colorInterval = undefined;
+            }
             colorInterval = setInterval(randomizeColor, periodMS); // repeating, slow call
         }
         colorWaitInterval = undefined;
-    }, nextTick - thisTick);
+    }, Math.max(nextTick - thisTick,10));
     
     if (flashTimeout) clearTimeout(flashTimeout);
 
@@ -128,19 +133,20 @@ function setColorPeriod(periodMS, doSend=true) {
 function toggleHide() {
     $("body").classList.toggle("only-colors");
     isVisible = !$("body").classList.contains("only-colors");
-    sendToSlaves("visibility", isVisible);
+    peer.getVariable("visibility").set(isVisible);
 }
 
 function togglePause(doSend=true) {
     isPaused = !isPaused;
-    if (doSend) sendToSlaves("paused", isPaused);
+    if (doSend) peer.getVariable("paused").set(isPaused);
     if (isPaused) {
-        if (colorInterval) clearInterval(colorInterval);
+        if (colorInterval) clearInterval(colorInterval); 
+        if (colorWaitInterval) clearTimeout(colorWaitInterval);
         colorInterval = undefined;
 
         const [r,g,b] = getCurrentColor();
         unRandomizeColor(r,g,b, doSend);
-        if (doSend) sendToSlaves("color", [r,g,b]);
+        if (doSend) peer.getVariable("color").set([r,g,b]);
         $("#custom-color > #r").value = r;
         $("#custom-color > #g").value = g;
         $("#custom-color > #b").value = b;
@@ -195,7 +201,7 @@ function changeMode(step, doSend=true) {
     if (mode >= modeStrs.length) mode = 0;
 
     updateSetColor();
-    if (doSend) sendToSlaves("mode", mode);
+    if (doSend) peer.getVariable("mode").set(mode);
 }
 
 $("#next-type").addEventListener("click", function(e) {
@@ -211,6 +217,37 @@ function generatePeer() {
     const peerId = window.location.search.substring(1);
     if (peerId) generateSlave(peerId.toUpperCase()); // connect to this id
     else generateMaster();             // create new id to connect to
+
+    peer.on("init", () => {
+        peerIsReady = true;
+    })
+
+    peer.on("variable", (changed) => {
+        if (changed.get() === null) return;
+        switch (changed.name) {
+            case "visibility":
+                if (isVisible != changed.get()) toggleHide(false);
+                break;
+            case "color": {
+                const [r,g,b] = changed.get();
+                if (r == currentColor[0] && g == currentColor[1] && b == currentColor[2]) return;
+                unRandomizeColor(r,g,b, false);
+                break;
+            }
+            case "interval":
+                if (changed.get() == colorPeriod) return;
+                setColorPeriod(changed.get(), false);
+                break;
+            case "paused":
+                if (isPaused != changed.get()) togglePause(false);
+                break;
+            case "mode":
+                changeMode(changed.get() - mode, false);
+                break;
+            default:
+                console.log(changed.name)
+        }
+    })
 }
 
 function generateMaster() {
@@ -220,129 +257,18 @@ function generateMaster() {
     const peerId = createIDString(4);
     $("#id").innerText = peerId;
 
-    peer = new Peer("rcolor-glitch_" + peerId); // identify app as rcolor, so as not to interfere with any other apps using this method
-    peer.on("open", id => {
-        $("#id").classList.remove("hiddens"); // show id once initialized with peerJS server
+    peer = new Server({
+        peerHost: "rcolor",
+        peerId: peerId
     });
-
-    peer.on("connection", conn => {
-        conns[conn.connectionId] = {
-            conn: conn,
-            hb: (new Date).getTime()
-        };
-        
-        conn.on("data", data => {
-            if ("init" in data) {
-                queueSendToSlaves("interval", colorPeriod);
-                queueSendToSlaves("visibility", isVisible);
-                queueSendToSlaves("isPaused", isPaused);
-                queueSendToSlaves("mode", mode);
-                sendToSlaves("color", currentColor, conn.connectionId);
-            }
-            if ("color" in data) {
-                queueSendToSlaves("from", conn.connectionId);
-                const [r,g,b] = data.color;
-                unRandomizeColor(r,g,b, true);
-            }
-            if ("visibility" in data && data.visibility != isVisible) {
-                queueSendToSlaves("from", conn.connectionId);
-                toggleHide();
-            }
-            if ("interval" in data && data.interval != colorPeriod) {
-                queueSendToSlaves("from", conn.connectionId);
-                setColorPeriod(data.interval);
-            }
-            if ("mode" in data) {
-                queueSendToSlaves("from", conn.connectionId);
-                mode = data.mode;
-                changeMode(0, true);
-            }
-            if ("paused" in data && data.paused != isPaused) {
-                queueSendToSlaves("from", conn.connectionId);
-                togglePause(true);
-            }
-
-            refreshHeartbeat(conn.connectionId);
-        });
-    });
-
-    setInterval(trimHeartbeatless, 1000); // check this once every second // might want to decrease frequency of checking
-}
-
-// use this when you KNOW the next message will be send almost instantly
-function queueSendToSlaves(key,value) {
-    sendToSlavesQueue[key] = value;
-}
-
-function sendToSlaves(key, value, oneSlaveId=null) {
-    sendToSlavesQueue[key] = value;
-    isHeartbeatNeeded = false;
-    
-    console.log(sendToSlavesQueue);
-    if (oneSlaveId) conns[oneSlaveId].conn.send(sendToSlavesQueue); 
-    else for (let i in conns) { conns[i].conn.send(sendToSlavesQueue); }
-    
-    sendToSlavesQueue = {}; // reset queue
 }
 
 function generateSlave(peerId) {
     isSlave = true;
-    peer = new Peer();
-    peer.on("open", () => {
-        $("#id").innerText = peerId;
-        const conn = peer.connect("rcolor-glitch_" + peerId);
-        conn.on("open", () => {
-            conns[conn] = {
-                "hb": (new Date()).getTime(),
-                conn: conn
-            };
-            conn.on("data", data => {
-                if ("from" in data && data.from == conn.connectionId) { // original mesage from this peer, ignore
-                    return;
-                }
-
-                if ("color" in data) {
-                    const [r,g,b] = data.color;
-                    setColor(r,g,b);
-                    updateSetColor(r,g,b);
-                }
-                if ("interval" in data) {
-                    setColorPeriod(data.interval, false);
-                }
-                if ("visibility" in data && data.visibility != isVisible) { toggleHide(); }
-                if ("mode" in data) {
-                    mode = data.mode;
-                    changeMode(0, false);
-                }
-                if ("paused" in data && data.paused != isPaused) {
-                    togglePause(false);
-                }
-            });
-
-            // heartbeat
-            setInterval(() => {
-                if (isHeartbeatNeeded) conn.send({ "hb": true });
-                isHeartbeatNeeded = true;
-            }, HEARTBEAT_PERIOD);
-
-            conn.send({ "init": true }); // send that connection has been made // might not be necessary
-        });
+    peer = new Client({
+        peerHost: "rcolor",
+        peerId: peerId
     });
-}
-
-function refreshHeartbeat(connId) {
-    conns[connId].hb = (new Date).getTime();
-}
-
-function trimHeartbeatless() {
-    const now = (new Date()).getTime();
-    for (let i in conns) {
-        if (now > conns[i].hb + 10*HEARTBEAT_PERIOD) { // missed 5 consecutive heartbeats
-            conns[i].conn.send({ "disconnected": true });
-            console.log("death")
-            delete conns[i];
-        }            
-    }
 }
 
 const validChars = "ACDEFGHJKMNPQRTUVWXYZ3467";
